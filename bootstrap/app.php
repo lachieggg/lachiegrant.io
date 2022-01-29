@@ -16,8 +16,16 @@ use Respect\Validation\Validator as RespectValidation;
 use Slim\Csrf\Guard;
 use Slim\Views\Twig;
 use Slim\Views\TwigExtension;
-use Slim\App;
+
 use Dotenv\Dotenv;
+
+use DI\Container;
+
+use Psr\Http\Message\ResponseInterface as Response;
+use Psr\Http\Message\ServerRequestInterface as Request;
+use Psr\Http\Message\ResponseFactoryInterface as ResponseFactoryInterface;
+
+use Slim\Factory\AppFactory;
 
 
 // Start new session
@@ -31,8 +39,24 @@ $settings = [
     'displayErrorDetails' => true
 ];
 
-// Create the Slim Application
-$app = new App(['settings' => $settings]);
+
+/**
+ * Instantiate App
+ */
+
+$container = new DI\Container();
+AppFactory::setContainer($container);
+
+$app = AppFactory::create();
+// Response factory for CSRF
+$responseFactory = $app->getResponseFactory();
+
+// Fetch the slim container
+$container = $app->getContainer();
+
+$app->addRoutingMiddleware();
+
+$errorMiddleware = $app->addErrorMiddleware(true, true, true);
 
 // Set up the routes
 require __DIR__ . '/../app/routes.php';
@@ -56,8 +80,6 @@ $db = [
     'collation' => 'utf8_unicode_ci'
 ];
 
-// Fetch the Slim Container
-$container = $app->getContainer();
 
 // Configure Eloquent
 $capsule = new Manager;
@@ -69,7 +91,7 @@ $capsule->bootEloquent();
 setDotEnv($container);
 setAuth($container);
 setView($container);
-setCsrf($container);
+setCsrf($container, $responseFactory);
 setDatabase($container, $capsule);
 setValidator($container);
 setControllers($container);
@@ -83,74 +105,80 @@ $app->add(new CsrfViewMiddleware($container));
 RespectValidation::with('\\LoginApp\\Validation\\Rules\\');
 
 // CSRF protection for Slim 3
-$app->add($container->csrf);
+$app->add($container->get('csrf'));
+
+$app->run();
 
 /**
  * @param $container
  */
 function setControllers($container) {
-    $container['HomeController'] = function ($container) {
+    $container->set('HomeController', function ($container) {
         return new HomeController($container);
-    };
-    $container['AuthController'] = function ($container) {
+    });
+    $container->set('AuthController', function ($container) {
         return new AuthController($container);
-    };
-    $container['ContactController'] = function ($container) {
+    });
+    $container->set('ContactController', function ($container) {
         return new ContactController($container);
-    };
-    $container['BlogController'] = function ($container) {
+    });
+    $container->set('BlogController', function ($container) {
         return new BlogController($container);
-    };
-    $container['ForumController'] = function ($container) {
+    });
+    $container->set('ForumController', function ($container) {
         return new ForumController($container);
-    };
+    });
 }
 
 /**
  * @param $container
  */
 function setDotEnv($container) {
-    $container['dotenv'] = function ($container) {
+    $container->set('dotenv', function ($container) {
         $dotenv = Dotenv::createImmutable(__DIR__ . "/../");
         $dotenv->load();
         return $dotenv;
-    };
+    });
 }
 
 /**
  * @param $container
  */
 function setDatabase($container, $capsule) {
-    $container['db'] = function ($container) use ($capsule) {
+    $container->set('db', function ($container) use ($capsule) {
         return $capsule;
-    };
+    });
 }
 
 /**
  * @param $container
  */
 function setAuth($container) {
-    $container['auth'] = function ($container) {
+    $container->set('auth', function ($container) {
         return new Auth($container);
-    };
+    });
 }
 
 /**
  * @param $container
  */
 function setView($container) {
-    $container['view'] = function ($container) {
-        $view = new Twig(__DIR__ . '/../resources/views');
+
+
+    $container->set('view', function ($container) {
+        //$view = new Twig(__DIR__ . '/../resources/views', ['cache'], false);
+
+        $view =  Twig::create(__DIR__ . '/../resources/views', ['cache']);
     
-        $view->addExtension(new TwigExtension(
-            $container->router,
-            $container->request->getUri()
-        ));
+        // $view->addExtension(new TwigExtension(
+        //     $container->router,
+        //     $container->request->getUri()
+        // ));
     
         $view->getEnvironment()->addGlobal('auth', [
-          'check' => $container->auth->check(),
-          'user' => $container->auth->user(),
-          'admin' => $container->auth->admin()
+          'check' => $container->get('auth')->check(),
+          'user' => $container->get('auth')->user(),
+          'admin' => $container->get('auth')->admin()
         ]);
 
         // Add env variables to twig environment
@@ -158,25 +186,30 @@ function setView($container) {
         $view->getEnvironment()->addGlobal('testMode', Config::testMode());
     
         return $view;
-    };
+    });
 }
 
 /**
  * @param $container
  */
 function setValidator($container) {
-    $container['validator'] = function ($container) {
+    $container->set('validator', function ($container) {
         return new Validator;
-    };
+    });
 }
 
 /**
  * @param $container
+ * @param $responseFactory
  */
-function setCsrf($container) {
-    $container['csrf'] = function ($container) {
-        $csrf = new Guard();
+function setCsrf($container, $responseFactory) {
+    $container->set('csrf', function ($container) use ($responseFactory) {
+        $csrf = new Guard($responseFactory);
         $csrf->setPersistentTokenMode(true);
         return $csrf;
-    };
+    });
 }
+
+
+// Add Twig-View Middleware
+$app->add(TwigMiddleware::createFromContainer($app));
